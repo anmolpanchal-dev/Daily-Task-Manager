@@ -148,7 +148,7 @@ const readStore = () => {
 
 function App() {
   const [store, setStore] = useState(readStore);
-  const [page, setPage] = useState("Dashboard");
+  const [page, setPage] = useState("Landing");
   const [dark, setDark] = useState(store.theme === "dark");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [modal, setModal] = useState(null);
@@ -307,6 +307,9 @@ function App() {
     setPage(nextPage);
     setMobileMenuOpen(false);
   };
+  if (page === "Landing")
+    return <Landing onEnter={() => selectPage("Dashboard")} />;
+
   return (
     <div className="app-shell">
       <aside className={`sidebar ${mobileMenuOpen ? "open" : ""}`}>
@@ -448,6 +451,71 @@ function App() {
         />
       )}
     </div>
+  );
+}
+
+function Landing({ onEnter }) {
+  return (
+    <main className="landing-page">
+      <header className="landing-header">
+        <div className="brand">
+          <div className="brand-mark">
+            <Sparkles size={17} />
+          </div>
+          <span>
+            task<span className="brand-accent">flow</span>
+          </span>
+        </div>
+        <button className="landing-login" onClick={onEnter}>
+          Open workspace <ChevronRight size={16} />
+        </button>
+      </header>
+      <section className="landing-hero">
+        <div className="landing-copy">
+          <p className="eyebrow">A calmer way to get things done</p>
+          <h1>Turn your plans into <span>progress.</span></h1>
+          <p className="landing-description">
+            Plan your day, keep your focus, and build momentum with a task
+            workspace designed to make progress feel simple.
+          </p>
+          <button className="primary-button landing-cta" onClick={onEnter}>
+            Start planning <ChevronRight size={17} />
+          </button>
+          <div className="landing-proof">
+            <CheckCircle2 size={17} />
+            <span>Everything you need for a more intentional day.</span>
+          </div>
+        </div>
+        <div className="landing-preview" aria-label="Taskflow workspace preview">
+          <div className="landing-preview-top">
+            <div>
+              <span className="label">TODAY'S FOCUS</span>
+              <strong>Make it count.</strong>
+            </div>
+            <div className="landing-preview-score">82%</div>
+          </div>
+          <div className="landing-preview-progress"><i /></div>
+          <div className="landing-preview-tasks">
+            <div className="landing-preview-task is-done">
+              <CheckCircle2 size={18} />
+              <span>Review your priorities</span>
+            </div>
+            <div className="landing-preview-task">
+              <span className="landing-preview-check" />
+              <span>Complete focused work</span>
+            </div>
+            <div className="landing-preview-task">
+              <span className="landing-preview-check" />
+              <span>Reflect on your progress</span>
+            </div>
+          </div>
+          <div className="landing-preview-footer">
+            <span>Daily streak</span>
+            <strong>7 days <Flame size={15} /></strong>
+          </div>
+        </div>
+      </section>
+    </main>
   );
 }
 
