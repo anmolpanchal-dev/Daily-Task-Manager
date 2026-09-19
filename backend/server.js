@@ -32,13 +32,14 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests without an origin
-      // (Postman, server-to-server requests, etc.)
       if (!origin) {
         return callback(null, true);
       }
 
-      if (allowedOrigins.includes(origin)) {
+      const isVercelOrigin =
+        origin.endsWith(".vercel.app");
+
+      if (allowedOrigins.includes(origin) || isVercelOrigin) {
         return callback(null, true);
       }
 
