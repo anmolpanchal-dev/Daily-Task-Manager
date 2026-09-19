@@ -3,6 +3,7 @@ import {
   BarChart3,
   Bell,
   BookOpen,
+  ArrowLeft,
   CalendarDays,
   Check,
   CheckCircle2,
@@ -15,6 +16,9 @@ import {
   FolderKanban,
   LayoutDashboard,
   ListTodo,
+  LockKeyhole,
+  LogOut,
+  Mail,
   Menu,
   Moon,
   MoreHorizontal,
@@ -30,6 +34,9 @@ import {
   Trophy,
   X,
   Zap,
+  UserRound,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import {
   Bar,
@@ -45,6 +52,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { authApi, getToken, setToken, tasksApi } from "./services/api";
 
 const CATEGORIES = [
   "DSA",
@@ -58,6 +66,9 @@ const CATEGORIES = [
 ];
 const PRIORITIES = ["High", "Medium", "Low"];
 const STORAGE_KEY = "daily-task-studio-v1";
+const AUTH_KEY = "taskflow-auth-v1";
+const ACCOUNT_KEY = "taskflow-account-v1";
+const ACCOUNTS_KEY = "taskflow-accounts-v1";
 const colors = { High: "#ef6b73", Medium: "#e6a84d", Low: "#6ea7f4" };
 const todayKey = () => new Date().toISOString().slice(0, 10);
 const addDays = (date, amount) => {
@@ -145,10 +156,63 @@ const readStore = () => {
     return seedStore();
   }
 };
+const accountStorageKey = (email) =>
+  `taskflow-data-${encodeURIComponent(email.trim().toLowerCase())}`;
+const readAccounts = () => {
+  try {
+    const accounts = JSON.parse(localStorage.getItem(ACCOUNTS_KEY) || "[]");
+    if (Array.isArray(accounts) && accounts.length) return accounts;
+    const legacyAccount = JSON.parse(localStorage.getItem(ACCOUNT_KEY) || "null");
+    return legacyAccount?.email ? [legacyAccount] : [];
+  } catch {
+    return [];
+  }
+};
+const readAccountStore = (account, createNew = false) => {
+  try {
+    const scopedKey = accountStorageKey(account.email);
+    const scoped = localStorage.getItem(scopedKey);
+    if (scoped) return { ...emptyStore(), ...JSON.parse(scoped) };
+    const legacy = localStorage.getItem(STORAGE_KEY);
+    if (legacy && !createNew && readAccounts().length <= 1) {
+      const migrated = { ...emptyStore(), ...JSON.parse(legacy), displayName: account.name };
+      localStorage.setItem(scopedKey, JSON.stringify(migrated));
+      return migrated;
+    }
+  } catch {
+    return createNew ? emptyStore() : seedStore();
+  }
+  return createNew ? { ...emptyStore(), displayName: account.name } : seedStore();
+};
+const normalizeTask = (task, date) => ({
+  ...task,
+  id: task._id || task.id || uid(),
+  date: task.date || date,
+  status: task.status || "pending",
+});
+const tasksToDays = (tasks) =>
+  tasks.reduce((days, task) => {
+    const date = task.date || todayKey();
+    days[date] = { ...(days[date] || { tasks: [] }), tasks: [...(days[date]?.tasks || []), normalizeTask(task, date)] };
+    return days;
+  }, {});
 
 function App() {
-  const [store, setStore] = useState(readStore);
-  const [page, setPage] = useState("Landing");
+  const [account, setAccount] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem(ACCOUNT_KEY)) || null;
+    } catch {
+      return null;
+    }
+  });
+  const [store, setStore] = useState(() =>
+    account ? readAccountStore(account) : readStore(),
+  );
+  const [apiReady, setApiReady] = useState(false);
+  const [page, setPage] = useState(() =>
+    sessionStorage.getItem(AUTH_KEY) && account ? "Dashboard" : "Landing",
+  );
+  const [authMode, setAuthMode] = useState("login");
   const [dark, setDark] = useState(store.theme === "dark");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [modal, setModal] = useState(null);
@@ -163,11 +227,37 @@ function App() {
   const tomorrow = addDays(today, 1);
 
   useEffect(() => {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ ...store, theme: dark ? "dark" : "light" }),
-    );
-  }, [store, dark]);
+    if (account) {
+      localStorage.setItem(
+        accountStorageKey(account.email),
+        JSON.stringify({ ...store, theme: dark ? "dark" : "light" }),
+      );
+    }
+  }, [store, dark, account]);
+  useEffect(() => {
+    if (!account || !getToken()) return undefined;
+    let active = true;
+    Promise.all([authApi.me(), tasksApi.list()])
+      .then(([meResponse, taskResponse]) => {
+        if (!active) return;
+        const user = meResponse.user || meResponse.data || meResponse;
+        const tasks = taskResponse.tasks || taskResponse.data || taskResponse;
+        const nextAccount = { name: user.name, email: user.email };
+        setAccount(nextAccount);
+        setStore((current) => ({
+          ...current,
+          displayName: user.name,
+          days: tasksToDays(Array.isArray(tasks) ? tasks : []),
+        }));
+        setApiReady(true);
+      })
+      .catch(() => {
+        if (active) setApiReady(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
   useEffect(() => {
     document.documentElement.dataset.theme = dark ? "dark" : "light";
   }, [dark]);
@@ -245,47 +335,54 @@ function App() {
           ? "Good work. A little consistency goes a long way."
           : "Small steps today, stronger days tomorrow.";
 
-  function addTask(date, task) {
+  async function addTask(date, task) {
     const existing = store.days[date]?.tasks || [];
     if (
       existing.some(
         (t) => t.title.trim().toLowerCase() === task.title.trim().toLowerCase(),
       )
     )
-      return false;
-    updateDay(date, [
-      ...existing,
-      { ...task, id: uid(), status: task.status || "pending" },
-    ]);
+      throw new Error("A task with this title already exists for that day.");
+    const localTask = { ...task, id: uid(), date, status: task.status || "pending" };
+    if (getToken()) {
+      const response = await tasksApi.create(localTask);
+      updateDay(date, [...existing, normalizeTask(response.task || response.data || response, date)]);
+    } else updateDay(date, [...existing, localTask]);
     return true;
   }
-  function saveTask(date, task) {
-    if (task.id)
+  async function saveTask(date, task) {
+    if (task.id) {
+      const response = getToken()
+        ? await tasksApi.update(task.id, { ...task, date })
+        : null;
+      const savedTask = response?.task || response?.data || task;
       updateDay(
         date,
         (store.days[date]?.tasks || []).map((t) =>
-          t.id === task.id ? task : t,
+          t.id === task.id ? normalizeTask(savedTask, date) : t,
         ),
       );
-    else addTask(date, task);
+    } else await addTask(date, task);
     setModal(null);
   }
-  function toggleTask(task) {
+  async function toggleTask(date, task) {
+    const status = task.status === "completed" ? "pending" : "completed";
+    if (getToken()) await tasksApi.status(task.id, status);
     updateDay(
-      today,
-      tasks.map((t) =>
-        t.id === task.id
-          ? { ...t, status: t.status === "completed" ? "pending" : "completed" }
-          : t,
+      date,
+      (store.days[date]?.tasks || []).map((t) =>
+        t.id === task.id ? { ...t, status } : t,
       ),
     );
   }
-  function deleteTask(date, id) {
-    if (window.confirm("Delete this task?"))
+  async function deleteTask(date, id) {
+    if (window.confirm("Delete this task?")) {
+      if (getToken()) await tasksApi.remove(id);
       updateDay(
         date,
         (store.days[date]?.tasks || []).filter((t) => t.id !== id),
       );
+    }
   }
 
   const nav = [
@@ -307,8 +404,63 @@ function App() {
     setPage(nextPage);
     setMobileMenuOpen(false);
   };
+  function enterAuth(mode = "login") {
+    setAuthMode(mode);
+    setPage("Auth");
+  }
+  async function handleAuth({ name, email, password }) {
+    const response = authMode === "signup"
+      ? await authApi.register({ name, email, password })
+      : await authApi.login({ email, password });
+    const user = response.user || response.data?.user || response.data;
+    setToken(response.token || response.data?.token);
+    const nextAccount = { name: user.name || name, email: user.email || email };
+    const accounts = readAccounts();
+    const isNewAccount = authMode === "signup";
+    const nextAccounts = accounts.some((item) => item.email === email)
+      ? accounts.map((item) => (item.email === email ? nextAccount : item))
+      : [...accounts, nextAccount];
+    localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(nextAccounts));
+    localStorage.setItem(ACCOUNT_KEY, JSON.stringify(nextAccount));
+    sessionStorage.setItem(AUTH_KEY, "authenticated");
+    setAccount(nextAccount);
+    const nextStore = readAccountStore(nextAccount, isNewAccount);
+    const taskResponse = await tasksApi.list();
+    let remoteTasks = taskResponse.tasks || taskResponse.data || [];
+    if (!remoteTasks.length && !isNewAccount) {
+      const localTasks = Object.entries(nextStore.days).flatMap(([date, day]) =>
+        (day.tasks || []).map((task) => ({ ...task, date })),
+      );
+      for (const task of localTasks) {
+        await tasksApi.create(task);
+      }
+      const migratedResponse = await tasksApi.list();
+      remoteTasks = migratedResponse.tasks || migratedResponse.data || [];
+    }
+    setStore({ ...nextStore, displayName: nextAccount.name, days: tasksToDays(remoteTasks) });
+    setDark(nextStore.theme === "dark");
+    setApiReady(true);
+    setPage("Dashboard");
+  }
+  function logout() {
+    authApi.logout().catch(() => {});
+    setToken(null);
+    sessionStorage.removeItem(AUTH_KEY);
+    setPage("Landing");
+    setMobileMenuOpen(false);
+  }
   if (page === "Landing")
-    return <Landing onEnter={() => selectPage("Dashboard")} />;
+    return <Landing onLogin={() => enterAuth("login")} onSignup={() => enterAuth("signup")} />;
+  if (page === "Auth")
+    return (
+      <AuthPage
+        mode={authMode}
+        account={account}
+        onBack={() => setPage("Landing")}
+        onModeChange={setAuthMode}
+        onSuccess={handleAuth}
+      />
+    );
 
   return (
     <div className="app-shell">
@@ -424,7 +576,7 @@ function App() {
         )}
         {page === "Tomorrow" && (
           <TomorrowPage
-            {...{ tomorrow, tomorrowTasks, setModal, deleteTask }}
+            {...{ tomorrow, tomorrowTasks, setModal, toggleTask, deleteTask }}
           />
         )}
         {page === "Analytics" && <AnalyticsPage {...{ store, history }} />}
@@ -432,7 +584,7 @@ function App() {
           <HistoryPage {...{ store, selectedDate, setSelectedDate }} />
         )}
         {page === "Settings" && (
-          <SettingsPage {...{ dark, setDark, setStore, displayName }} />
+          <SettingsPage {...{ dark, setDark, setStore, displayName, account, onLogout: logout }} />
         )}
       </main>
       {mobileMenuOpen && (
@@ -454,7 +606,7 @@ function App() {
   );
 }
 
-function Landing({ onEnter }) {
+function Landing({ onLogin, onSignup }) {
   return (
     <main className="landing-page">
       <header className="landing-header">
@@ -466,9 +618,10 @@ function Landing({ onEnter }) {
             task<span className="brand-accent">flow</span>
           </span>
         </div>
-        <button className="landing-login" onClick={onEnter}>
-          Open workspace <ChevronRight size={16} />
-        </button>
+        <div className="landing-actions">
+          <button className="landing-login" onClick={onLogin}>Log in</button>
+          <button className="landing-signup" onClick={onSignup}>Get started <ChevronRight size={16} /></button>
+        </div>
       </header>
       <section className="landing-hero">
         <div className="landing-copy">
@@ -478,7 +631,7 @@ function Landing({ onEnter }) {
             Plan your day, keep your focus, and build momentum with a task
             workspace designed to make progress feel simple.
           </p>
-          <button className="primary-button landing-cta" onClick={onEnter}>
+          <button className="primary-button landing-cta" onClick={onSignup}>
             Start planning <ChevronRight size={17} />
           </button>
           <div className="landing-proof">
@@ -514,6 +667,60 @@ function Landing({ onEnter }) {
             <strong>7 days <Flame size={15} /></strong>
           </div>
         </div>
+      </section>
+    </main>
+  );
+}
+
+function AuthPage({ mode, onBack, onModeChange, onSuccess }) {
+  const isSignup = mode === "signup";
+  const [form, setForm] = useState({ name: "", email: "", password: "", confirm: "" });
+  const [error, setError] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  function changeMode(nextMode) {
+    setForm({ name: "", email: "", password: "", confirm: "" });
+    setError("");
+    setShowPassword(false);
+    onModeChange(nextMode);
+  }
+
+  function submit(event) {
+    event.preventDefault();
+    const email = form.email.trim().toLowerCase();
+    if (isSignup && !form.name.trim()) return setError("Please enter your full name.");
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setError("Enter a valid email address.");
+    if (form.password.length < 8) return setError("Your password must be at least 8 characters.");
+    if (isSignup && form.password !== form.confirm) return setError("Passwords do not match.");
+    setError("");
+    setLoading(true);
+    Promise.resolve(onSuccess({
+      name: isSignup ? form.name.trim() : undefined,
+      email,
+      password: form.password,
+    }))
+      .catch((requestError) => setError(requestError.message))
+      .finally(() => setLoading(false));
+  }
+
+  return (
+    <main className="auth-page">
+      <button className="auth-back" onClick={onBack}><ArrowLeft size={16} /> Back to home</button>
+      <section className="auth-card">
+        <div className="auth-brand"><div className="brand-mark"><Sparkles size={17} /></div><span>task<span className="brand-accent">flow</span></span></div>
+        <p className="eyebrow">{isSignup ? "START WITH INTENTION" : "WELCOME BACK"}</p>
+        <h1>{isSignup ? "Build your best days." : "Pick up where you left off."}</h1>
+        <p className="auth-subtitle">{isSignup ? "Create your private workspace and turn plans into progress." : "Your focus plan is waiting for you."}</p>
+        <form className="auth-form" onSubmit={submit}>
+          {isSignup && <label><span>Full name</span><div className="input-wrap"><UserRound size={17} /><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Anmol Panchal" autoComplete="name" /></div></label>}
+          <label><span>Email address</span><div className="input-wrap"><Mail size={17} /><input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="you@example.com" autoComplete="email" /></div></label>
+          <label><span>Password</span><div className="input-wrap"><LockKeyhole size={17} /><input type={showPassword ? "text" : "password"} value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="At least 8 characters" autoComplete={isSignup ? "new-password" : "current-password"} /><button type="button" className="password-toggle" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Hide password" : "Show password"}>{showPassword ? <EyeOff size={16} /> : <Eye size={16} />}</button></div></label>
+          {isSignup && <label><span>Confirm password</span><div className="input-wrap"><LockKeyhole size={17} /><input type={showPassword ? "text" : "password"} value={form.confirm} onChange={(e) => setForm({ ...form, confirm: e.target.value })} placeholder="Repeat your password" autoComplete="new-password" /></div></label>}
+          {error && <div className="auth-error" role="alert">{error}</div>}
+          <button className="primary-button auth-submit" disabled={loading}>{loading ? "Opening workspace..." : isSignup ? "Create workspace" : "Log in"}</button>
+        </form>
+        <p className="auth-switch">{isSignup ? "Already have an account?" : "New to taskflow?"} <button type="button" onClick={() => changeMode(isSignup ? "login" : "signup")}>{isSignup ? "Log in" : "Create an account"}</button></p>
       </section>
     </main>
   );
@@ -609,7 +816,7 @@ function Dashboard(p) {
               <TaskRow
                 key={t.id}
                 task={t}
-                onToggle={() => p.toggleTask(t)}
+                onToggle={() => p.toggleTask(p.today, t)}
                 onEdit={() => p.setModal({ date: p.today, task: t })}
                 onDelete={() => p.deleteTask(p.today, t.id)}
               />
@@ -952,7 +1159,7 @@ function TasksPage({
             <TaskRow
               key={t.id}
               task={t}
-              onToggle={() => toggleTask(t)}
+              onToggle={() => toggleTask(today, t)}
               onEdit={() => setModal({ date: today, task: t })}
               onDelete={() => deleteTask(today, t.id)}
             />
@@ -972,7 +1179,7 @@ function TasksPage({
     </div>
   );
 }
-function TomorrowPage({ tomorrow, tomorrowTasks, setModal, deleteTask }) {
+function TomorrowPage({ tomorrow, tomorrowTasks, setModal, toggleTask, deleteTask }) {
   return (
     <div className="content">
       <PageTitle
@@ -1005,7 +1212,7 @@ function TomorrowPage({ tomorrow, tomorrowTasks, setModal, deleteTask }) {
               key={t.id}
               task={t}
               compact
-              onToggle={() => {}}
+              onToggle={() => toggleTask(tomorrow, t)}
               onEdit={() => setModal({ date: tomorrow, task: t })}
               onDelete={() => deleteTask(tomorrow, t.id)}
             />
@@ -1351,7 +1558,7 @@ function HistoryPage({ store, selectedDate, setSelectedDate }) {
     </div>
   );
 }
-function SettingsPage({ dark, setDark, setStore, displayName }) {
+function SettingsPage({ dark, setDark, setStore, displayName, account, onLogout }) {
   const [name, setName] = useState(displayName);
   const [saved, setSaved] = useState(false);
 
@@ -1401,7 +1608,7 @@ function SettingsPage({ dark, setDark, setStore, displayName }) {
           <div className="setting-icon">
             <Moon size={18} />
           </div>
-          <div>
+          <div className="setting-copy">
             <strong>Appearance</strong>
             <span>Use a calmer dark theme in low light.</span>
           </div>
@@ -1410,6 +1617,18 @@ function SettingsPage({ dark, setDark, setStore, displayName }) {
             onClick={() => setDark((v) => !v)}
           >
             <i />
+          </button>
+        </div>
+        <div className="setting-row">
+          <div className="setting-icon">
+            <Mail size={18} />
+          </div>
+          <div className="setting-copy">
+            <strong>Account</strong>
+            <span>{account?.email || "Personal workspace"}</span>
+          </div>
+          <button className="outline-button" onClick={onLogout}>
+            <LogOut size={15} /> Log out
           </button>
         </div>
         <div className="setting-row">
@@ -1479,7 +1698,38 @@ function TaskModal({ date, task, onClose, onSave }) {
       minutes: 30,
     },
   );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
   const set = (key, value) => setForm((f) => ({ ...f, [key]: value }));
+  async function submit() {
+    const title = form.title.trim();
+    const minutes = Number(form.minutes);
+    if (!title) {
+      setError("Task title is required.");
+      return;
+    }
+    if (!CATEGORIES.includes(form.category)) {
+      setError("Please choose a valid category.");
+      return;
+    }
+    if (!PRIORITIES.includes(form.priority)) {
+      setError("Please choose a valid priority.");
+      return;
+    }
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) {
+      setError("Estimated time must be a whole number from 1 to 1440 minutes.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(date, { ...form, title, minutes });
+    } catch (saveError) {
+      setError(saveError.message || "The task could not be saved.");
+    } finally {
+      setSaving(false);
+    }
+  }
   return (
     <div
       className="modal-backdrop"
@@ -1561,12 +1811,13 @@ function TaskModal({ date, task, onClose, onSave }) {
           </span>
           <button
             className="primary-button"
-            disabled={!form.title.trim()}
-            onClick={() => onSave(date, form)}
+            disabled={saving || !form.title.trim()}
+            onClick={submit}
           >
-            {task ? "Save changes" : "Add task"}
+            {saving ? "Saving..." : task ? "Save changes" : "Add task"}
           </button>
         </div>
+        {error && <div className="form-error" role="alert">{error}</div>}
       </div>
     </div>
   );

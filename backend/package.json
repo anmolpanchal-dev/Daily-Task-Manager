@@ -1,0 +1,19 @@
+{
+  "name": "taskflow-backend",
+  "version": "1.0.0",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "check": "node --check server.js && node --check controllers/authController.js && node --check controllers/taskController.js && node --check config/db.js && node --check middleware/authMiddleware.js && node --check middleware/errorMiddleware.js && node --check models/User.js && node --check models/Task.js && node --check routes/authRoutes.js && node --check routes/taskRoutes.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.7.2"
+  }
+}
